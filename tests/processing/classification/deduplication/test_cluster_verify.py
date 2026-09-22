@@ -254,3 +254,22 @@ def test_production_verification_compares_truncated_prefixes(tmp_path, local_cli
     markers = list(load_parquet(str(output / "outputs/source_001/shard-000.parquet")))
     assert [(row["id"], row["dup_representative_id"], row["dup_containment"]) for row in markers] == [("b", "a", 1.0)]
     assert result.counters["fuzzy/cluster_verify/truncated_documents"] == 2
+
+
+@pytest.mark.parametrize(("members", "removed_ids"), [(2, []), (3, ["b"])])
+def test_cluster_buffer_uses_the_production_flush_boundary(tmp_path, local_client, members, removed_ids):
+    text = "alpha beta gamma"
+    cluster_text = _write_cluster_text(
+        tmp_path / "cluster_text",
+        [_member(cluster="c1", doc_id=doc_id, text=text, file_idx=0) for doc_id in "abc"[:members]],
+    )
+    output = tmp_path / "verified"
+
+    verify_cluster_text(
+        cluster_text=cluster_text,
+        output_path=str(output),
+        limits=ClusterVerificationLimits(maximum_cluster_chars=2 * len(text) - 1),
+    )
+
+    markers = [row for path in (output / "outputs/source_000").glob("*.parquet") for row in load_parquet(str(path))]
+    assert [row["id"] for row in markers] == removed_ids

@@ -419,7 +419,8 @@ def test_repeated_normalized_id_need_not_be_adjacent(tmp_path: Path) -> None:
     assert [(row["id"], row["text"]) for row in rows] == [("a", "first"), ("b", "second")]
 
 
-def test_cluster_steps_build_from_dependencies_and_persist_markers(tmp_path: Path) -> None:
+@pytest.mark.parametrize("has_candidates", [True, False])
+def test_cluster_steps_build_from_dependencies_and_persist_markers(tmp_path: Path, has_candidates: bool) -> None:
     normalized_path = tmp_path / "normalized"
     candidate_path = tmp_path / "candidates"
 
@@ -442,10 +443,14 @@ def test_cluster_steps_build_from_dependencies_and_persist_markers(tmp_path: Pat
         directory = Path(output_path) / "attributes"
         _write_parquet(
             directory / "part.parquet",
-            [
-                {"id": "a", "dup_cluster_id": "7"},
-                {"id": "b", "dup_cluster_id": "7"},
-            ],
+            (
+                [
+                    {"id": "a", "dup_cluster_id": "7"},
+                    {"id": "b", "dup_cluster_id": "7"},
+                ]
+                if has_candidates
+                else []
+            ),
         )
         return FuzzyDupsAttrData(
             params=MinHashParams(num_perms=16, num_bands=4, ngram_size=5, seed=0),
@@ -488,6 +493,12 @@ def test_cluster_steps_build_from_dependencies_and_persist_markers(tmp_path: Pat
     StepRunner().run([verified], max_concurrent=1)
 
     artifact = read_artifact(materialized.output_path, ClusterTextData)
+    if not has_candidates:
+        markers = read_artifact(verified.output_path, ClusterVerifiedFuzzyDupsAttrData)
+        assert markers.counters["fuzzy/cluster_verify/markers"] == 0
+        assert markers.counters["fuzzy/cluster_verify/documents"] == 0
+        assert not list(Path(verified.output_path).glob("outputs/**/*.parquet"))
+        return
     rows = pq.read_table(str(Path(artifact.path) / "text")).to_pylist()
     assert [(row["id"], row["text"]) for row in rows] == [("a", "alpha beta gamma delta"), ("b", "alpha beta gamma")]
     manifest = read_cluster_text_manifest(artifact.path)

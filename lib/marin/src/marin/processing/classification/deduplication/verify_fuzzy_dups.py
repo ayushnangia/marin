@@ -180,7 +180,7 @@ class FuzzyVerificationStoreConfig:
             raise ValueError("lookup_batch_size must be at least 1")
 
 
-VERIFIED_FUZZY_DUPLICATE_SCHEMA = pa.schema(
+_VERIFIED_DUPLICATE_SCHEMA = pa.schema(
     [
         pa.field("id", pa.string(), nullable=False),
         pa.field("dup_doc", pa.bool_(), nullable=False),
@@ -690,9 +690,9 @@ def _write_verified_shard(file_idx: int, records: Iterator[dict[str, Any]]) -> d
             if record["kind"] == "sentinel":
                 continue
             verified += 1
-            yield {field.name: record[field.name] for field in VERIFIED_FUZZY_DUPLICATE_SCHEMA}
+            yield {field.name: record[field.name] for field in _VERIFIED_DUPLICATE_SCHEMA}
 
-    result = write_parquet_file(output_rows(), shard.output_path, schema=VERIFIED_FUZZY_DUPLICATE_SCHEMA)
+    result = write_parquet_file(output_rows(), shard.output_path, schema=_VERIFIED_DUPLICATE_SCHEMA)
     return {**result, "file_idx": file_idx, "verified_duplicates": verified}
 
 

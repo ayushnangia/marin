@@ -34,6 +34,7 @@ from marin.processing.classification.deduplication.cluster_text import (
     CLUSTER_TEXT_SUBDIRECTORY,
     CLUSTER_TEXT_SUCCESS_FILENAME,
     ClusterTextData,
+    ClusterTextShard,
     read_cluster_text_manifest,
 )
 from marin.processing.classification.deduplication.verify_fuzzy_dups import (
@@ -160,7 +161,7 @@ def solve_text_shard(
         if len(members) < 2:
             return
         cluster = [row["text"] for row in members]
-        shards: dict[int, tuple[str, str, str]] = zephyr_worker_ctx().get_shared(_SHARED_SHARDS_KEY)
+        shards: dict[int, ClusterTextShard] = zephyr_worker_ctx().get_shared(_SHARED_SHARDS_KEY)
         for removal in find_duplicates(cluster, params):
             member = members[removal.member_index]
             representative = members[removal.representative_index]
@@ -171,7 +172,7 @@ def solve_text_shard(
                 "dup_doc": True,
                 "dup_cluster_id": member["dup_cluster_id"],
                 "dup_representative_id": representative["id"],
-                "dup_representative_source_tag": shards[representative["file_idx"]][1],
+                "dup_representative_source_tag": shards[representative["file_idx"]].source_tag,
                 "dup_containment": removal.containment,
                 "dup_jaccard": removal.jaccard,
                 "dup_novel_tokens": removal.novel_tokens,
@@ -218,12 +219,12 @@ def solve_text_shard(
 
 def _write_markers(file_idx: int, records: Iterator[dict[str, Any]], output_path: str) -> dict[str, Any]:
     """Write one shard's markers into the co-partitioned attribute tree."""
-    shards: dict[int, tuple[str, str, str]] = zephyr_worker_ctx().get_shared(_SHARED_SHARDS_KEY)
-    _, source_tag, basename = shards[file_idx]
-    path = prefix_join(_attr_dir(output_path, source_tag), basename)
+    shards: dict[int, ClusterTextShard] = zephyr_worker_ctx().get_shared(_SHARED_SHARDS_KEY)
+    shard = shards[file_idx]
+    path = prefix_join(_attr_dir(output_path, shard.source_tag), shard.basename)
     rows = ({field.name: record[field.name] for field in CLUSTER_DUPLICATE_SCHEMA} for record in records)
     result = write_parquet_file(rows, path, schema=CLUSTER_DUPLICATE_SCHEMA)
-    counters.pipeline.update_counter(f"{COUNTER_PREFIX}/source/{source_tag}/markers", result["count"])
+    counters.pipeline.update_counter(f"{COUNTER_PREFIX}/source/{shard.source_tag}/markers", result["count"])
     return {**result, "file_idx": file_idx, "markers": result["count"]}
 
 
@@ -282,12 +283,10 @@ def verify_cluster_text(
     manifest = read_cluster_text_manifest(cluster_text)
     if not manifest.shards:
         raise ValueError(f"{cluster_text} manifest names no normalized shards")
-    shards = {shard.file_idx: (shard.source_key, shard.source_tag, shard.basename) for shard in manifest.shards}
+    shards = {shard.file_idx: shard for shard in manifest.shards}
 
     text_dir = prefix_join(cluster_text, CLUSTER_TEXT_SUBDIRECTORY)
     paths = sorted(str(path) for path in StoragePath(prefix_join(text_dir, "*.parquet")).glob())
-    if not paths:
-        raise FileNotFoundError(f"No grouped text files under {text_dir}")
     if files_per_task < 1:
         raise ValueError(f"files_per_task must be at least 1, got {files_per_task}")
     groups = [paths[start : start + files_per_task] for start in range(0, len(paths), files_per_task)]
@@ -303,7 +302,7 @@ def verify_cluster_text(
     context = ZephyrContext(
         name="fuzzy-cluster-verify",
         resources=worker_resources,
-        max_workers=max_workers or len(groups),
+        max_workers=max_workers or max(1, len(groups)),
         max_shard_failures=max_shard_failures,
     )
     context.put(_SHARED_SHARDS_KEY, shards)
@@ -331,6 +330,7 @@ def verify_cluster_text(
     write_copartitioned_source_manifest(output_path=output_path, attr_dirs=attr_dirs)
     markers = sum(result["markers"] for result in outcome.results)
     output_counters: dict[str, int | float] = dict(outcome.counters)
+    output_counters.setdefault(f"{COUNTER_PREFIX}/documents", 0)
     output_counters[f"{COUNTER_PREFIX}/markers"] = markers
     output_counters[f"{COUNTER_PREFIX}/text_files"] = len(paths)
     logger.info("Wrote %d duplicate markers from %d grouped text files", markers, len(paths))
