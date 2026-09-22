@@ -87,6 +87,7 @@ jobs:
             'from experiments.ferries.canary_ferry import _tpu_types_from_env; print(_tpu_types_from_env()[0])')
           JOB_ID=$(.venv/bin/iris --config=${{ env.IRIS_CONFIG }} \
             job run --no-wait \
+            --timeout 21600 \
             --memory=2G --disk=4G --cpu=1 --extra=cpu \
             --priority production \
             --preemptible \
@@ -234,7 +235,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
       - name: Notify Slack
-        uses: marin-community/marin-style/actions/notify-slack@main
+        uses: marin-community/marin-style/actions/notify-slack@4b2fc2b0ec0bb9ad1304ef76936eb68e97f893cb  # main 2026-08-24
         with:
           webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
           fallback-text: ":red_circle: *TPU Canary failed*\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

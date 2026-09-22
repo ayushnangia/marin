@@ -4,10 +4,10 @@
 """GCP IAM grants owned by the ``marin`` stack for the hai-gcp-models project.
 
 Covers every human, service account, and Google-managed service-agent binding on the project,
-the shared KMS key, every secret, every bucket, every Artifact Registry repo, Cloud Run IAP
-policies, and who can impersonate each service account. This is the sole Pulumi owner
-for GCP IAM grants. Each ``*IAMBinding`` owns the complete member set for one role and optional
-condition on its target resource.
+the shared KMS key, every secret, every bucket, every Artifact Registry repo, backend-service
+and Cloud Run IAP policies, and who can impersonate each service account. This is the sole
+Pulumi owner for GCP IAM grants. Each ``*IAMBinding`` owns the complete member set for one role
+and optional condition on its target resource.
 """
 
 import base64
@@ -92,10 +92,20 @@ class GcpServiceAccountIam:
 
 
 @dataclass(frozen=True)
+class GcpBackendServiceIapIam:
+    service: str
+    iap_grants: tuple[GcpRoleGrant, ...]
+
+
+@dataclass(frozen=True)
 class GcpCloudRunIapIam:
+    """IAP grants on a Cloud Run service, plus grants on the service itself (the IAP service
+    agent's ``roles/run.invoker``, which IAP needs to forward admitted requests)."""
+
     location: str
     service: str
     iap_grants: tuple[GcpRoleGrant, ...]
+    service_grants: tuple[GcpRoleGrant, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -133,6 +143,7 @@ class GcpIamGrantSet:
     buckets: tuple[GcpBucketIam, ...] = ()
     artifact_repositories: tuple[GcpArtifactRepositoryIam, ...] = ()
     service_accounts: tuple[GcpServiceAccountIam, ...] = ()
+    backend_service_iap: tuple[GcpBackendServiceIapIam, ...] = ()
     cloud_run_iap: tuple[GcpCloudRunIapIam, ...] = ()
 
 
@@ -150,6 +161,7 @@ class GcpIamArgs:
     buckets: tuple[GcpBucketIam, ...]
     artifact_repositories: tuple[GcpArtifactRepositoryIam, ...]
     service_accounts: tuple[GcpServiceAccountIam, ...]
+    backend_service_iap: tuple[GcpBackendServiceIapIam, ...]
     cloud_run_iap: tuple[GcpCloudRunIapIam, ...]
 
 
@@ -166,6 +178,8 @@ def merge_iam_grant_sets(args: GcpIamArgs, grant_sets: tuple[GcpIamGrantSet, ...
         + tuple(repository for grant_set in grant_sets for repository in grant_set.artifact_repositories),
         service_accounts=args.service_accounts
         + tuple(account for grant_set in grant_sets for account in grant_set.service_accounts),
+        backend_service_iap=args.backend_service_iap
+        + tuple(service for grant_set in grant_sets for service in grant_set.backend_service_iap),
         cloud_run_iap=args.cloud_run_iap
         + tuple(service for grant_set in grant_sets for service in grant_set.cloud_run_iap),
     )
@@ -257,6 +271,13 @@ def _resolve_encrypted_members(args: GcpIamArgs, decrypt: _KmsMemberDecryptor) -
             replace(r, grants=_resolve_grants(r.grants, decrypt)) for r in args.artifact_repositories
         ),
         service_accounts=tuple(replace(a, grants=_resolve_grants(a.grants, decrypt)) for a in args.service_accounts),
+        backend_service_iap=tuple(
+            replace(
+                service,
+                iap_grants=_resolve_grants(service.iap_grants, decrypt),
+            )
+            for service in args.backend_service_iap
+        ),
         cloud_run_iap=tuple(
             replace(
                 service,
@@ -480,6 +501,50 @@ def _grant_cloud_run_iap(context: _GcpIamContext) -> None:
             context.register(resource, declaration.provider_id)
 
 
+def _grant_cloud_run_services(context: _GcpIamContext) -> None:
+    targets = _group_target_grants(
+        ((service.location, service.service), service.service_grants) for service in context.args.cloud_run_iap
+    )
+    for (location, service), grants in targets:
+        service_id = f"projects/{context.args.project}/locations/{location}/services/{service}"
+        prefix = f"run-service-{resource_slug(location)}-{resource_slug(service)}"
+        for grant in _role_bindings(grants):
+            declaration = _binding_declaration(prefix, service_id, grant)
+            resource = gcp.cloudrunv2.ServiceIamBinding(
+                declaration.logical_name,
+                project=context.args.project,
+                location=location,
+                name=service,
+                role=grant.role,
+                members=list(declaration.members),
+                condition=_condition_args(grant.condition, gcp.cloudrunv2.ServiceIamBindingConditionArgs),
+                opts=context.options(),
+            )
+            context.register(resource, declaration.provider_id)
+
+
+def _grant_backend_service_iap(context: _GcpIamContext) -> None:
+    targets = _group_target_grants((service.service, service.iap_grants) for service in context.args.backend_service_iap)
+    for service, grants in targets:
+        iap_service_id = f"projects/{context.args.project}/iap_web/compute/services/{service}"
+        iap_prefix = f"iap-backend-service-{resource_slug(service)}"
+        for grant in _role_bindings(grants):
+            declaration = _binding_declaration(iap_prefix, iap_service_id, grant)
+            resource = gcp.iap.WebBackendServiceIamBinding(
+                declaration.logical_name,
+                project=context.args.project,
+                web_backend_service=service,
+                role=grant.role,
+                members=list(declaration.members),
+                condition=_condition_args(
+                    grant.condition,
+                    gcp.iap.WebBackendServiceIamBindingConditionArgs,
+                ),
+                opts=context.options(),
+            )
+            context.register(resource, declaration.provider_id)
+
+
 def _condition_args(
     condition: GcpIamCondition | None, args_cls: _ConditionArgsFactory[_ConditionArgsT]
 ) -> _ConditionArgsT | None:
@@ -526,6 +591,8 @@ class GcpIam(pulumi.ComponentResource):
         _grant_bucket_iam(grant_context)
         _grant_artifact_repository_iam(grant_context)
         _grant_service_account_iam(grant_context)
+        _grant_backend_service_iap(grant_context)
         _grant_cloud_run_iap(grant_context)
+        _grant_cloud_run_services(grant_context)
 
         self.register_outputs({})

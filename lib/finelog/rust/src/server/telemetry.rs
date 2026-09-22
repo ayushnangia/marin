@@ -24,12 +24,12 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use uuid::Uuid;
 
 use crate::errors::StatsError;
+use crate::indices::group_extrema::GroupExtremaConfig;
 use crate::ingestion_policy::IngestionBatchSource;
 use crate::policies::{eager_storage_namespaces_for, schema_for_namespace, storage_policy_for};
 use crate::proto::finelog::stats::ColumnType;
 use crate::server::auth::{auth_gate, AuthIdentity, AuthPolicy};
 use crate::server::ingest_health::IngestHealth;
-use crate::store::group_extrema::GroupExtremaConfig;
 use crate::store::schema::{schema_to_arrow, Column, CoveringProjection, Schema};
 use crate::store::Store;
 use crate::telemetry_policy::TELEMETRY_NAMESPACE;
@@ -58,6 +58,7 @@ const PRIMARY_PROCESS_INDEX: &str = "0";
 const TRAINING_STATUS_NAMES: [&str; 3] = ["phase", "progress_time_seconds", "step"];
 const TRAINING_LOSS_NAMES: [&str; 1] = ["train_loss"];
 const TRAINING_RUN_NAMES: [&str; 1] = ["global_step"];
+const SESSION_DISCOVERY_NAMES: [&str; 1] = ["num_requests_running"];
 const HOST_METRIC_NAMES: [&str; 7] = [
     "node_cpu_utilization_percent",
     "node_disk_total_bytes",
@@ -890,6 +891,55 @@ fn normalize_record_batch(
     .map_err(|error| ApiError::bad_request(format!("could not normalize telemetry: {error}")))
 }
 
+/// One process-internal delta counter written through the ordinary telemetry policy.
+pub(crate) struct CounterSample {
+    pub name: String,
+    pub value: f64,
+    pub unit: String,
+    pub attributes: BTreeMap<String, String>,
+}
+
+/// Normalize trusted process-internal counters into the same batch shape as
+/// `POST /v1/telemetry`.
+pub(crate) fn counter_batch(
+    service: &str,
+    timestamp_ms: i64,
+    samples: Vec<CounterSample>,
+) -> Result<RecordBatch, StatsError> {
+    let batch_id = Uuid::new_v4().to_string();
+    let records = samples
+        .into_iter()
+        .map(|sample| TelemetryRecord {
+            timestamp_ms,
+            kind: RecordKind::Counter,
+            name: sample.name,
+            value: Some(sample.value),
+            body: None,
+            unit: Some(sample.unit),
+            attributes: sample.attributes,
+        })
+        .collect::<Vec<_>>();
+    let batch = TelemetryBatch {
+        version: TELEMETRY_VERSION,
+        batch_id,
+        resource: Resource {
+            service: service.to_string(),
+            run_id: None,
+            job_id: None,
+            execution_uid: None,
+            region: None,
+            node_name: None,
+            process_index: None,
+            attributes: BTreeMap::new(),
+        },
+        records,
+    };
+    let indexed = batch.records.iter().enumerate().collect::<Vec<_>>();
+    normalize_record_batch(&batch, &indexed).map_err(|error| {
+        StatsError::Internal(format!("normalizing internal telemetry: {}", error.message))
+    })
+}
+
 pub(crate) fn telemetry_schema() -> Schema {
     Schema::new(
         vec![
@@ -915,6 +965,7 @@ pub(crate) fn telemetry_schema() -> Schema {
                         .into_iter()
                         .chain(TRAINING_LOSS_NAMES)
                         .chain(TRAINING_RUN_NAMES)
+                        .chain(SESSION_DISCOVERY_NAMES)
                         .chain(HOST_METRIC_NAMES)
                         .chain(ACCELERATOR_METRIC_NAMES),
                 )
@@ -979,6 +1030,21 @@ pub(crate) fn telemetry_schema() -> Schema {
             PROCESS_INDEX_COLUMN,
             "name",
             "resource_attributes_json",
+            "cluster",
+        ],
+    ))
+    .with_covering_projection(CoveringProjection::new(
+        "session-discovery",
+        "name",
+        SESSION_DISCOVERY_NAMES,
+        [
+            "timestamp_ms",
+            "service",
+            RUN_ID_COLUMN,
+            JOB_ID_COLUMN,
+            EXECUTION_UID_COLUMN,
+            "name",
+            "attributes_json",
             "cluster",
         ],
     ))
