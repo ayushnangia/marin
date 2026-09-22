@@ -20,11 +20,12 @@ from marin.processing.classification.deduplication.cluster_text import (
     write_cluster_text_success,
 )
 from marin.processing.classification.deduplication.cluster_verify import (
+    CLUSTER_DUPLICATE_SCHEMA,
+    ClusterVerificationLimits,
     ClusterVerifiedFuzzyDupsAttrData,
     verify_cluster_text,
 )
 from marin.processing.classification.deduplication.verify_fuzzy_dups import (
-    VERIFIED_FUZZY_DUPLICATE_SCHEMA,
     VerifiedFuzzyDupsArtifact,
     VerifiedFuzzyDupsPerSource,
 )
@@ -100,7 +101,6 @@ def _member(*, cluster: str, doc_id: str, text: str, file_idx: int) -> dict:
         "dup_cluster_id": cluster,
         "id": doc_id,
         "text": text,
-        "text_truncated": False,
         "file_idx": file_idx,
     }
 
@@ -124,13 +124,13 @@ def test_marker_lands_beside_the_normalized_shard_that_holds_the_duplicate(tmp_p
     )
 
     markers = list(load_parquet(str(Path(output_path) / "outputs/source_001/shard-000.parquet")))
-    assert set(markers[0]) == set(VERIFIED_FUZZY_DUPLICATE_SCHEMA.names)
+    assert set(markers[0]) == set(CLUSTER_DUPLICATE_SCHEMA.names)
     assert [(row["id"], row["dup_doc"], row["dup_cluster_id"], row["dup_representative_id"]) for row in markers] == [
         ("right-copy", True, "c1", "left-original")
     ]
-    assert markers[0]["dup_representative_source_key"] == "datakit/normalize/left"
-    assert markers[0]["dup_representative_kind"] == "cluster_longest"
-    assert markers[0]["dup_member_containment"] == pytest.approx(26 / 29, rel=1e-3)
+    assert markers[0]["dup_representative_source_tag"] == "source_000"
+    assert markers[0]["dup_novel_tokens"] == 1
+    assert markers[0]["dup_containment"] == pytest.approx(26 / 29, rel=1e-3)
     # The left source holds only a representative and a singleton, so it gets no
     # file at all: the store reads a missing shard as "no duplicates here".
     assert not list((Path(output_path) / "outputs/source_000").glob("*.parquet"))
@@ -235,19 +235,22 @@ def test_incomplete_cluster_text_is_rejected(tmp_path, local_client):
         )
 
 
-def test_truncated_document_is_not_removed_or_used_as_a_representative(tmp_path, local_client):
-    original = _member(cluster="c1", doc_id="left-original", text=ORIGINAL, file_idx=0)
-    original["text_truncated"] = True
+def test_production_verification_compares_truncated_prefixes(tmp_path, local_client):
     cluster_text = _write_cluster_text(
         tmp_path / "cluster_text",
-        [original, _member(cluster="c1", doc_id="right-copy", text=NEAR_COPY, file_idx=1)],
+        [
+            _member(cluster="c1", doc_id="a", text="alpha beta gamma first tail", file_idx=0),
+            _member(cluster="c1", doc_id="b", text="alpha beta gamma second tail", file_idx=1),
+        ],
     )
+    output = tmp_path / "verified"
 
     result = verify_cluster_text(
         cluster_text=cluster_text,
-        output_path=str(tmp_path / "verified"),
-        params=ClusterDedupParams(),
+        output_path=str(output),
+        limits=ClusterVerificationLimits(maximum_document_chars=len("alpha beta gamma")),
     )
 
-    assert result.counters["fuzzy/cluster_verify/markers"] == 0
-    assert result.counters["fuzzy/cluster_verify/truncated_documents_skipped"] == 1
+    markers = list(load_parquet(str(output / "outputs/source_001/shard-000.parquet")))
+    assert [(row["id"], row["dup_representative_id"], row["dup_containment"]) for row in markers] == [("b", "a", 1.0)]
+    assert result.counters["fuzzy/cluster_verify/truncated_documents"] == 2

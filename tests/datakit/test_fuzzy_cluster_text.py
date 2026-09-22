@@ -23,6 +23,10 @@ from marin.processing.classification.deduplication.cluster_text import (
     read_cluster_text_manifest,
     write_cluster_text_manifest,
 )
+from marin.processing.classification.deduplication.cluster_verify import (
+    ClusterVerifiedFuzzyDupsAttrData,
+    cluster_verify_step,
+)
 from marin.processing.classification.deduplication.fuzzy_dups import FuzzyDupsAttrData, FuzzyDupsPerSource
 from marin.processing.classification.deduplication.fuzzy_minhash import MinHashParams
 from marin.processing.classification.deduplication.large_clusters import (
@@ -415,7 +419,7 @@ def test_repeated_normalized_id_need_not_be_adjacent(tmp_path: Path) -> None:
     assert [(row["id"], row["text"]) for row in rows] == [("a", "first"), ("b", "second")]
 
 
-def test_cluster_steps_build_from_dependencies_and_persist_grouped_text(tmp_path: Path) -> None:
+def test_cluster_steps_build_from_dependencies_and_persist_markers(tmp_path: Path) -> None:
     normalized_path = tmp_path / "normalized"
     candidate_path = tmp_path / "candidates"
 
@@ -471,7 +475,17 @@ def test_cluster_steps_build_from_dependencies_and_persist_grouped_text(tmp_path
         reduce_task_resources=resource,
     )
 
-    StepRunner().run([materialized], max_concurrent=1)
+    verified = cluster_verify_step(
+        name="verified",
+        cluster_text=materialized,
+        max_workers=1,
+        worker_resources=resource,
+        map_task_resources=resource,
+        reduce_task_resources=resource,
+        files_per_task=1,
+        reduce_shards=1,
+    )
+    StepRunner().run([verified], max_concurrent=1)
 
     artifact = read_artifact(materialized.output_path, ClusterTextData)
     rows = pq.read_table(str(Path(artifact.path) / "text")).to_pylist()
@@ -479,3 +493,7 @@ def test_cluster_steps_build_from_dependencies_and_persist_grouped_text(tmp_path
     manifest = read_cluster_text_manifest(artifact.path)
     assert manifest.shards[rows[0]["file_idx"]].basename == "part.parquet"
     assert (Path(artifact.path) / "_SUCCESS").exists()
+
+    markers = read_artifact(verified.output_path, ClusterVerifiedFuzzyDupsAttrData)
+    rows = pq.read_table(str(Path(next(iter(markers.sources.values())).attr_dir) / "part.parquet")).to_pylist()
+    assert [(row["id"], row["dup_representative_id"], row["dup_containment"]) for row in rows] == [("b", "a", 1.0)]

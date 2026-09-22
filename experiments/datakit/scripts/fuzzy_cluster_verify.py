@@ -36,12 +36,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cluster-text", required=True, help="Root written by fuzzy_cluster_text.py")
     parser.add_argument("--out", required=True)
-    parser.add_argument("--minimum-containment", type=float, default=0.60)
-    parser.add_argument("--ngram-size", type=int, default=3)
-    parser.add_argument("--probe-ngrams", type=int, default=32)
-    parser.add_argument("--maximum-posting-length", type=int, default=512)
-    parser.add_argument("--maximum-candidates", type=int, default=32)
-    parser.add_argument("--exact-scan-maximum", type=int, default=256)
+    parser.add_argument("--minimum-containment", type=float, default=ClusterDedupParams().minimum_containment)
+    parser.add_argument("--ngram-size", type=int, default=ClusterDedupParams().ngram_size)
+    parser.add_argument("--probe-ngrams", type=int, default=ClusterDedupParams().probe_ngrams)
+    parser.add_argument("--maximum-posting-length", type=int, default=ClusterDedupParams().maximum_posting_length)
+    parser.add_argument("--maximum-candidates", type=int, default=ClusterDedupParams().maximum_candidates)
+    parser.add_argument("--exact-scan-maximum", type=int, default=ClusterDedupParams().exact_scan_maximum)
     parser.add_argument(
         "--files-per-task", type=int, default=DEFAULT_FILES_PER_TASK, help="Grouped text files solved by one map task"
     )
