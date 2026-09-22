@@ -49,6 +49,17 @@ def _write_parquet(path: Path, rows: list[dict]) -> None:
     pq.write_table(pa.Table.from_pylist(rows), path)
 
 
+def _text_shard(normalized: Path, candidates: Path, file_idx: int = 0) -> TextShard:
+    return TextShard(
+        file_idx=file_idx,
+        normalized_path=str(normalized),
+        candidate_path=str(candidates),
+        source_key="normalized/source",
+        source_tag="source_000",
+        basename="part.parquet",
+    )
+
+
 def _candidate_artifact(prefix: Path, sources: dict[str, Path]) -> None:
     write_artifact(
         FuzzyDupsAttrData(
@@ -118,14 +129,7 @@ def test_join_shard_writes_candidate_text_and_provenance(tmp_path: Path) -> None
         candidates,
         [{"id": "b", "dup_cluster_id": "7", "is_cluster_canonical": False}],
     )
-    shard = TextShard(
-        file_idx=3,
-        normalized_path=str(normalized),
-        candidate_path=str(candidates),
-        source_key="normalized/source",
-        source_tag="source_000",
-        basename="part.parquet",
-    )
+    shard = _text_shard(normalized, candidates, file_idx=3)
 
     rows = list(_join_shard(shard, {}))
 
@@ -140,27 +144,6 @@ def test_join_shard_writes_candidate_text_and_provenance(tmp_path: Path) -> None
     ]
 
 
-def test_join_shard_rejects_candidate_without_normalized_text(tmp_path: Path) -> None:
-    normalized = tmp_path / "normalized.parquet"
-    candidates = tmp_path / "candidates.parquet"
-    _write_parquet(normalized, [{"id": "a", "text": "first"}])
-    _write_parquet(
-        candidates,
-        [{"id": "missing", "dup_cluster_id": "7", "is_cluster_canonical": False}],
-    )
-    shard = TextShard(
-        file_idx=0,
-        normalized_path=str(normalized),
-        candidate_path=str(candidates),
-        source_key="normalized/source",
-        source_tag="source_000",
-        basename="part.parquet",
-    )
-
-    with pytest.raises(ValueError, match="IDs absent"):
-        list(_join_shard(shard, {}))
-
-
 def test_oversized_cluster_subdivides_equal_text_by_document_id(tmp_path: Path) -> None:
     normalized = tmp_path / "normalized.parquet"
     candidates = tmp_path / "candidates.parquet"
@@ -170,14 +153,7 @@ def test_oversized_cluster_subdivides_equal_text_by_document_id(tmp_path: Path) 
         candidates,
         [{"id": str(i), "dup_cluster_id": "7"} for i in range(32)],
     )
-    shard = TextShard(
-        file_idx=0,
-        normalized_path=str(normalized),
-        candidate_path=str(candidates),
-        source_key="normalized/source",
-        source_tag="source_000",
-        basename="part.parquet",
-    )
+    shard = _text_shard(normalized, candidates, file_idx=0)
 
     rows = list(_join_shard(shard, {"7": 8}))
 
@@ -307,44 +283,13 @@ def test_cluster_text_manifest_rejects_path_components(field: str) -> None:
         )
 
 
-def test_duplicate_candidate_ids_are_rejected(tmp_path: Path) -> None:
-    normalized = tmp_path / "normalized.parquet"
-    candidates = tmp_path / "candidates.parquet"
-    _write_parquet(normalized, [{"id": "a", "text": "first"}])
-    _write_parquet(
-        candidates,
-        [
-            {"id": "a", "dup_cluster_id": "7"},
-            {"id": "a", "dup_cluster_id": "8"},
-        ],
-    )
-    shard = TextShard(
-        file_idx=0,
-        normalized_path=str(normalized),
-        candidate_path=str(candidates),
-        source_key="normalized/source",
-        source_tag="source_000",
-        basename="part.parquet",
-    )
-
-    with pytest.raises(ValueError, match="duplicate candidate IDs"):
-        list(_join_shard(shard, {}))
-
-
 def test_materialized_text_retains_the_prefix_at_the_character_limit(tmp_path: Path) -> None:
     params = ClusterTextParams(maximum_document_chars=8)
     normalized = tmp_path / "normalized.parquet"
     candidates = tmp_path / "candidates.parquet"
     _write_parquet(normalized, [{"id": "a", "text": "a document longer than the test cap"}])
     _write_parquet(candidates, [{"id": "a", "dup_cluster_id": "7"}])
-    shard = TextShard(
-        file_idx=0,
-        normalized_path=str(normalized),
-        candidate_path=str(candidates),
-        source_key="normalized/source",
-        source_tag="source_000",
-        basename="part.parquet",
-    )
+    shard = _text_shard(normalized, candidates, file_idx=0)
 
     (row,) = list(_join_shard(shard, {}, params))
 
@@ -359,38 +304,13 @@ def test_split_hashes_use_the_materialized_prefix(tmp_path: Path) -> None:
     texts.append(texts[0])
     _write_parquet(normalized, [{"id": str(index), "text": text} for index, text in enumerate(texts)])
     _write_parquet(candidates, [{"id": str(index), "dup_cluster_id": "7"} for index in range(len(texts))])
-    shard = TextShard(
-        file_idx=0,
-        normalized_path=str(normalized),
-        candidate_path=str(candidates),
-        source_key="normalized/source",
-        source_tag="source_000",
-        basename="part.parquet",
-    )
+    shard = _text_shard(normalized, candidates, file_idx=0)
 
     rows = list(_join_shard(shard, {"7": 256}, params))
 
     assert [row["text"] for row in rows] == [text[:8] for text in texts]
     assert len({row["cluster_key"] for row in rows}) > 1
     assert rows[0]["cluster_key"] == rows[-1]["cluster_key"]
-
-
-def test_repeated_normalized_id_requires_equal_text(tmp_path: Path) -> None:
-    normalized = tmp_path / "normalized.parquet"
-    candidates = tmp_path / "candidates.parquet"
-    _write_parquet(normalized, [{"id": "a", "text": "first"}, {"id": "a", "text": "different"}])
-    _write_parquet(candidates, [{"id": "a", "dup_cluster_id": "7"}])
-    shard = TextShard(
-        file_idx=0,
-        normalized_path=str(normalized),
-        candidate_path=str(candidates),
-        source_key="normalized/source",
-        source_tag="source_000",
-        basename="part.parquet",
-    )
-
-    with pytest.raises(ValueError, match="inconsistent text"):
-        list(_join_shard(shard, {}))
 
 
 def test_repeated_normalized_id_need_not_be_adjacent(tmp_path: Path) -> None:
@@ -405,14 +325,7 @@ def test_repeated_normalized_id_need_not_be_adjacent(tmp_path: Path) -> None:
         ],
     )
     _write_parquet(candidates, [{"id": key, "dup_cluster_id": "7"} for key in ("a", "b")])
-    shard = TextShard(
-        file_idx=0,
-        normalized_path=str(normalized),
-        candidate_path=str(candidates),
-        source_key="normalized/source",
-        source_tag="source_000",
-        basename="part.parquet",
-    )
+    shard = _text_shard(normalized, candidates, file_idx=0)
 
     rows = list(_join_shard(shard, {}))
 
@@ -508,3 +421,33 @@ def test_cluster_steps_build_from_dependencies_and_persist_markers(tmp_path: Pat
     markers = read_artifact(verified.output_path, ClusterVerifiedFuzzyDupsAttrData)
     rows = pq.read_table(str(Path(next(iter(markers.sources.values())).attr_dir) / "part.parquet")).to_pylist()
     assert [(row["id"], row["dup_representative_id"], row["dup_containment"]) for row in rows] == [("b", "a", 1.0)]
+
+
+@pytest.mark.parametrize(
+    ("normalized_rows", "candidate_rows", "message"),
+    [
+        pytest.param(
+            [{"id": "a", "text": "first"}], [{"id": "missing", "dup_cluster_id": "7"}], "IDs absent", id="missing-text"
+        ),
+        pytest.param(
+            [{"id": "a", "text": "first"}],
+            [{"id": "a", "dup_cluster_id": "7"}, {"id": "a", "dup_cluster_id": "8"}],
+            "duplicate candidate IDs",
+            id="repeated-candidate",
+        ),
+        pytest.param(
+            [{"id": "a", "text": "first"}, {"id": "a", "text": "different"}],
+            [{"id": "a", "dup_cluster_id": "7"}],
+            "inconsistent text",
+            id="inconsistent-text",
+        ),
+    ],
+)
+def test_join_shard_rejects_invalid_candidate_text(tmp_path, normalized_rows, candidate_rows, message):
+    normalized = tmp_path / "normalized.parquet"
+    candidates = tmp_path / "candidates.parquet"
+    _write_parquet(normalized, normalized_rows)
+    _write_parquet(candidates, candidate_rows)
+
+    with pytest.raises(ValueError, match=message):
+        list(_join_shard(_text_shard(normalized, candidates), {}))
