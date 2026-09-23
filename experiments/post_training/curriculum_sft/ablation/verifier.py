@@ -80,21 +80,13 @@ def verify_task_payload(payload: object) -> TaskVerification:
         gross_profit = revenue - operating_cost
         margin_bps, remainder = divmod(gross_profit * BASIS_POINTS_SCALE, revenue)
         arithmetic_valid = (
-            isinstance(revenue, int)
-            and not isinstance(revenue, bool)
-            and isinstance(operating_cost, int)
-            and not isinstance(operating_cost, bool)
-            and isinstance(answer["gross_profit"], int)
-            and not isinstance(answer["gross_profit"], bool)
-            and isinstance(answer["margin_bps"], int)
-            and not isinstance(answer["margin_bps"], bool)
-            and revenue > 0
+            revenue > 0
             and 0 <= operating_cost < revenue
             and remainder == 0
             and answer["gross_profit"] == gross_profit
             and answer["margin_bps"] == margin_bps
         )
-    except (ArithmeticError, TypeError):
+    except ArithmeticError:
         arithmetic_valid = False
     evidence_valid = evidence == list(EVIDENCE_IDS)
     return TaskVerification(format_valid, arithmetic_valid, evidence_valid)
