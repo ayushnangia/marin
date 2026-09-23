@@ -6,10 +6,9 @@
 The two arms reuse the oracle-verified weak-specification datasets from the
 generation diagnostic. They differ only in whether GLM received the pinned finance
 curriculum section while generating those examples. Datakit validates, renders,
-normalizes, and tokenizes each Parquet dataset before one matched Snowball optimizer
-update. Each conversation remains a separate sequence until packed-document attention
-lands. Model staging, checkpoints, and HF exports live in the CoreWeave region's
-lifecycle-managed temporary bucket.
+normalizes, tokenizes, and packs each Parquet dataset before one matched Snowball
+optimizer update. Model staging, checkpoints, and HF exports live in the CoreWeave
+region's lifecycle-managed temporary bucket.
 """
 
 from __future__ import annotations
@@ -67,8 +66,10 @@ TEMP_TTL_DAYS = 7
 SNOWBALL_EVALUATION_MODEL = "snowball-datakit-sft-2026-09-20"
 
 TRAIN_STEPS = 1
-TRAIN_BATCH_SIZE = 8
+TRAIN_BATCH_SIZE = 64
 TRAIN_SEQUENCE_LENGTH = 4096
+DATA_AXIS_SIZE = 8
+EXPERT_AXIS_SIZE = 8
 _TRAIN_RESOURCES = "train_resources"
 
 
@@ -95,7 +96,7 @@ def _training_resources() -> ResourceConfig:
         cpu=32,
         ram="512g",
         disk="256g",
-        replicas=4,
+        replicas=8,
         preemptible=False,
     )
 
@@ -158,10 +159,12 @@ def _sft_spec(
             min_lr_ratio=0.0,
         ),
         mesh=MeshConfig(
-            axes={"data": 1, "replica": 1, "model": 1, "context": 4, "expert": -1},
+            axes={"expert": EXPERT_AXIS_SIZE, "replica": 1, "model": 1},
+            dcn_axes={"data": DATA_AXIS_SIZE, "replica_dcn": 1},
+            compute_mapping={"batch": ["replica_dcn", "data", "expert"]},
         ),
         seq_len=TRAIN_SEQUENCE_LENGTH,
-        pack=False,
+        pack=True,
         batch_size=TRAIN_BATCH_SIZE,
         num_train_steps=TRAIN_STEPS,
         wandb_project="marin-curriculum-sft-snowball",
@@ -177,7 +180,7 @@ def _training_data(cache_path: str, tokenizer: str, arm: str) -> LmDataConfig:
                 source=None,
                 cache_dir=cache_path,
                 format=TextLmDatasetFormat(),
-                pack=False,
+                pack=True,
             )
         },
         train_weights={arm: 1.0},
