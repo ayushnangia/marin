@@ -74,19 +74,14 @@ def verify_task_payload(payload: object) -> TaskVerification:
     format_valid = task_payload_has_schema(task)
     if not format_valid or facts is None or answer is None or not isinstance(evidence, list):
         return TaskVerification(False, False, False)
-    try:
-        revenue = facts["revenue"]
-        operating_cost = facts["operating_cost"]
+    revenue = facts["revenue"]
+    operating_cost = facts["operating_cost"]
+    arithmetic_valid = False
+    if revenue > 0 and 0 <= operating_cost < revenue:
         gross_profit = revenue - operating_cost
         margin_bps, remainder = divmod(gross_profit * BASIS_POINTS_SCALE, revenue)
         arithmetic_valid = (
-            revenue > 0
-            and 0 <= operating_cost < revenue
-            and remainder == 0
-            and answer["gross_profit"] == gross_profit
-            and answer["margin_bps"] == margin_bps
+            remainder == 0 and answer["gross_profit"] == gross_profit and answer["margin_bps"] == margin_bps
         )
-    except ArithmeticError:
-        arithmetic_valid = False
     evidence_valid = evidence == list(EVIDENCE_IDS)
     return TaskVerification(format_valid, arithmetic_valid, evidence_valid)
