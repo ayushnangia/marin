@@ -1,13 +1,7 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Small fictional tasks with a machine-checkable finance oracle.
-
-The task family is intentionally narrower than FinanceBench. It tests the
-mechanics we need to separate: extracting supplied figures, applying a known
-calculation, citing the relevant evidence, and following an output contract.
-No benchmark questions or examples are imported here.
-"""
+"""Small fictional finance tasks with a machine-checkable answer."""
 
 from __future__ import annotations
 

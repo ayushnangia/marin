@@ -35,6 +35,7 @@ from marin.evaluation.utils import discover_hf_checkpoints
 from marin.execution.artifact import Artifact
 from marin.execution.lazy import ArtifactStep, StepContext
 from marin.execution.step_runner import StepRunner
+from marin.training.training import LevanterCheckpoint
 
 from experiments.evaluation.evals import EvalchemyDefinition, resolve_eval_keys
 from experiments.evaluation.launch import (
@@ -92,27 +93,6 @@ class CatalogEvaluationModel:
 
     def resolve(self, _ctx: StepContext) -> ModelConfig:
         return models()[self.name]
-
-
-@dataclass(frozen=True)
-class ProducedEvaluationModel:
-    """Evaluate the newest Hugging Face checkpoint produced by an upstream step."""
-
-    step: ArtifactStep[Artifact]
-    model: ModelConfig
-
-    def deps(self) -> tuple[ArtifactStep, ...]:
-        return (self.step,)
-
-    def resolve(self, ctx: StepContext) -> ModelConfig:
-        if ctx.is_fingerprint:
-            location = f"artifact://{self.step.name}@{self.step.version}"
-        else:
-            checkpoints = discover_hf_checkpoints(ctx.artifact_path(self.step))
-            if not checkpoints:
-                raise FileNotFoundError(f"no HF checkpoint found under {ctx.artifact_path(self.step)}")
-            location = checkpoints[-1]
-        return replace(self.model, location=location, revision=None)
 
 
 def run_eval_pipeline_step(config: EvalStepConfig) -> EvaluationResult:
@@ -190,6 +170,57 @@ def eval_step(
         run=run_eval_pipeline_step,
         build_config=build_config,
         deps=deps,
+        runtime_args={
+            _ACCELERATOR_RUNTIME_ARG: accelerator,
+            _SUBMISSION_CLUSTER_RUNTIME_ARG: submission_cluster,
+            _FEDERATED_CLUSTER_RUNTIME_ARG: federated_cluster,
+        },
+    )
+
+
+def eval_checkpoint_step(
+    checkpoint: ArtifactStep[LevanterCheckpoint],
+    model: ModelConfig,
+    *,
+    evalchemy_config_path: Path,
+    version: str,
+    limit: int | None = None,
+    accelerator: str | None = None,
+    submission_cluster: str = EVALUATION_CONTROLLER_CLUSTER,
+    federated_cluster: str | None = None,
+) -> ArtifactStep[EvaluationResult]:
+    """Evaluate the latest HF export from a training step with a checked-in Evalchemy config."""
+
+    if not evalchemy_config_path.is_file():
+        raise ValueError(f"Evalchemy config does not exist: {evalchemy_config_path}")
+
+    def build_config(ctx: StepContext) -> EvalStepConfig:
+        if ctx.is_fingerprint:
+            location = f"artifact://{checkpoint.name}@{checkpoint.version}"
+        else:
+            checkpoints = discover_hf_checkpoints(ctx.artifact_path(checkpoint))
+            if not checkpoints:
+                raise FileNotFoundError(f"no HF checkpoint found under {ctx.artifact_path(checkpoint)}")
+            location = checkpoints[-1]
+        return EvalStepConfig(
+            model=replace(model, location=location, revision=None),
+            evals=None,
+            evalchemy_config_path=str(evalchemy_config_path),
+            limit=limit,
+            artifact_path=ctx.output_path,
+            accelerator=ctx.runtime_arg(_ACCELERATOR_RUNTIME_ARG),
+            submission_cluster=ctx.runtime_arg(_SUBMISSION_CLUSTER_RUNTIME_ARG),
+            federated_cluster=ctx.runtime_arg(_FEDERATED_CLUSTER_RUNTIME_ARG),
+            version=version,
+        )
+
+    return ArtifactStep(
+        name=f"evals/{model.name}/{canonical_served_name(evalchemy_config_path.stem)}",
+        version=version,
+        artifact_type=EvaluationResult,
+        run=run_eval_pipeline_step,
+        build_config=build_config,
+        deps=(checkpoint,),
         runtime_args={
             _ACCELERATOR_RUNTIME_ARG: accelerator,
             _SUBMISSION_CLUSTER_RUNTIME_ARG: submission_cluster,

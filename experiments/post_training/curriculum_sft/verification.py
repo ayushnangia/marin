@@ -1,7 +1,7 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Deterministic task scoring for curriculum SFT ablations."""
+"""Deterministic checks for generated finance tasks."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from experiments.post_training.curriculum_sft.ablation.tasks import (
+from experiments.post_training.curriculum_sft.tasks import (
     BASIS_POINTS_SCALE,
     EVIDENCE_IDS,
     FACT_FIELDS,

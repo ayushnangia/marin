@@ -160,6 +160,11 @@ to the launcher's shared `evals` root; its artifact path contains the pipeline c
 override is a runtime arg, so changing it does not change the artifact identity. Produced-model
 adapters such as `SkyRLEvaluationModel` use the same `eval_step` entry point.
 
+For a training step that exports a Hugging Face checkpoint, use
+`eval_checkpoint_step(checkpoint, model, evalchemy_config_path=..., version=...)`. The checkpoint is
+a direct dependency of the typed evaluation step; the step finds its latest HF export and clears
+the source model revision before launch.
+
 For a checked-in portable Evalchemy config that is not in the named registry, use
 `eval_step(model, evalchemy_config_path=Path("experiments/evaluation/configs/evalchemy/financebench.yaml"), ...)`.
 It preserves the config path in the artifact fingerprint and otherwise uses the same launcher and

@@ -5,12 +5,7 @@ import json
 
 import pytest
 
-from experiments.post_training.curriculum_sft.ablation.matrix import (
-    AblationCell,
-    CurriculumCondition,
-    GenerationSpec,
-    generated_payloads_to_rows,
-)
+from experiments.post_training.curriculum_sft.task_rows import generated_payloads_to_rows
 
 
 @pytest.mark.parametrize(
@@ -29,8 +24,7 @@ def test_sft_question_and_answer_use_verified_facts(question):
         "answer": {"gross_profit": 20, "margin_bps": 2000},
         "evidence": ["disclosure.revenue", "disclosure.operating_cost"],
     }
-    cell = AblationCell(CurriculumCondition.TASK_ONLY, GenerationSpec.WEAK, accepted_examples=1)
-    [row] = generated_payloads_to_rows(cell, [payload])
+    [row] = generated_payloads_to_rows([payload], accepted_examples=1)
 
     user_message = row["messages"][1]["content"]
     assert "revenue of 100 (evidence: disclosure.revenue)" in user_message

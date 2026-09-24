@@ -6,23 +6,17 @@ import json
 import pyarrow.dataset as ds
 from zephyr.writers import write_parquet_file
 
-from experiments.post_training.curriculum_sft.ablation.dataset import MaterializeDatasetConfig, materialize_dataset
-from experiments.post_training.curriculum_sft.ablation.generated_tasks import (
+from experiments.post_training.curriculum_sft.data import MaterializeDatasetConfig, materialize_dataset
+from experiments.post_training.curriculum_sft.generated_tasks import (
     GENERATED_TASK_SCHEMA,
     GENERATED_TASKS_FILENAME,
     GENERATION_FILENAME,
     generated_task_record,
     task_payload,
 )
-from experiments.post_training.curriculum_sft.ablation.matrix import (
-    AblationCell,
-    CurriculumCondition,
-    GenerationSpec,
-)
 
 
 def test_generated_task_parquet_preserves_rejected_payloads(tmp_path):
-    cell = AblationCell(CurriculumCondition.CURRICULUM_CONDITIONED, GenerationSpec.STRICT)
     payloads = [
         {
             "task_id": "bad-arithmetic",
@@ -43,7 +37,7 @@ def test_generated_task_parquet_preserves_rejected_payloads(tmp_path):
     parquet_path = tmp_path / "tasks.parquet"
     write_parquet_file(
         [
-            generated_task_record(cell, replicate=index, seed=19 + index, payload=payload)
+            generated_task_record(batch_index=index, seed=19 + index, payload=payload)
             for index, payload in enumerate(payloads)
         ],
         str(parquet_path),
@@ -52,15 +46,13 @@ def test_generated_task_parquet_preserves_rejected_payloads(tmp_path):
 
     records = ds.dataset(parquet_path, format="parquet").to_table().to_pylist()
 
-    assert [record["cell"] for record in records] == [cell.name, cell.name]
-    assert [record["replicate"] for record in records] == [0, 1]
+    assert [record["batch_index"] for record in records] == [0, 1]
     assert [record["seed"] for record in records] == [19, 20]
     assert [record["accepted"] for record in records] == [False, False]
     assert [task_payload(record) for record in records] == payloads
 
 
 def test_materialize_dataset_produces_rendered_parquet(tmp_path):
-    cell = AblationCell(CurriculumCondition.TASK_ONLY, GenerationSpec.WEAK, accepted_examples=1)
     payload = {
         "task_id": "example",
         "issuer": "Fictional issuer",
@@ -71,19 +63,10 @@ def test_materialize_dataset_produces_rendered_parquet(tmp_path):
     }
     ledger = {
         "batch_id": "batch-test",
-        "cells": [
-            {
-                "cell": cell.name,
-                "requested": 1,
-                "accepted": 1,
-                "unique_accepted": 1,
-                "format_rate": 1.0,
-                "arithmetic_rate": 1.0,
-                "evidence_rate": 1.0,
-                "replicates": 1,
-            }
-        ],
         "task_data": GENERATED_TASKS_FILENAME,
+        "requested": 1,
+        "accepted": 1,
+        "unique_accepted": 1,
     }
     generation_root = tmp_path / "generation"
     generation_root.mkdir()
@@ -91,7 +74,7 @@ def test_materialize_dataset_produces_rendered_parquet(tmp_path):
     task_path = generation_root / GENERATED_TASKS_FILENAME
     task_path.parent.mkdir()
     write_parquet_file(
-        [generated_task_record(cell, replicate=0, seed=17, payload=payload)],
+        [generated_task_record(batch_index=0, seed=17, payload=payload)],
         str(task_path),
         schema=GENERATED_TASK_SCHEMA,
     )
@@ -100,7 +83,7 @@ def test_materialize_dataset_produces_rendered_parquet(tmp_path):
         MaterializeDatasetConfig(
             generation_root=str(generation_root),
             output_path=str(tmp_path / "output"),
-            cell=cell,
+            accepted_examples=1,
         )
     )
 

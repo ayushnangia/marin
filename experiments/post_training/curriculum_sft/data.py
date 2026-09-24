@@ -1,7 +1,7 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Materialize oracle-verified curriculum ablation rows through Datakit."""
+"""Render verified finance tasks and build Snowball's Datakit token store."""
 
 from __future__ import annotations
 
@@ -19,32 +19,26 @@ from marin.execution.artifact import Artifact
 from marin.execution.lazy import ArtifactStep, StepContext
 from marin.experiment.namespacing import user_owned_name
 from marin.processing.tokenize.attributes import TokenizeAttributesConfig, tokenize_attributes
-from marin.processing.tokenize.store_builder import (
-    BuildLevanterStoreConfig,
-    build_levanter_store,
-)
+from marin.processing.tokenize.store_builder import BuildLevanterStoreConfig, build_levanter_store
 from rigging.filesystem.storage_path import StoragePath, prefix_join
 from zephyr.writers import write_parquet_file
 
-from experiments.post_training.curriculum_sft.ablation.generated_tasks import GENERATION_FILENAME, task_payload
-from experiments.post_training.curriculum_sft.ablation.matrix import AblationCell, generated_payloads_to_rows
+from experiments.post_training.curriculum_sft.generated_tasks import GENERATION_FILENAME, task_payload
+from experiments.post_training.curriculum_sft.task_rows import generated_payloads_to_rows
 
-DEFAULT_GENERATION_URI = "s3://marin-us-east-02a/marin/users/power/documents/curriculum-sft/ablation/2026.09.22.1"
 RAW_CHAT_FILENAME = "chat/part-00000-of-00001.parquet"
-MANIFEST_FILENAME = "manifest.json"
-DATA_SOURCE = "curriculum-sft"
 NORMALIZED_MAIN_RELATIVE_PATH = "normalized/outputs/main"
 STORE_RELATIVE_PATH = "store"
 
 
-class AblationDataset(Artifact):
-    """Normalized rendered-text Parquet for one curriculum ablation cell."""
+class FinanceDataset(Artifact):
+    """Datakit-rendered finance conversations."""
 
     main_output_dir: str
 
 
-class AblationStore(Artifact):
-    """Datakit token store consumed by one curriculum SFT arm."""
+class FinanceStore(Artifact):
+    """Token store consumed by Snowball SFT."""
 
     cache_path: str
     total_tokens: int
@@ -54,7 +48,7 @@ class AblationStore(Artifact):
 class MaterializeDatasetConfig:
     generation_root: str
     output_path: str
-    cell: AblationCell
+    accepted_examples: int
 
 
 @dataclass(frozen=True)
@@ -64,31 +58,20 @@ class BuildStoreConfig:
     tokenizer: str
 
 
-def materialize_dataset(config: MaterializeDatasetConfig) -> AblationDataset:
-    """Filter one GLM cell and produce Datakit-normalized rendered text."""
-
-    generation_path = StoragePath(config.generation_root) / GENERATION_FILENAME
-    ledger = json.loads(generation_path.read_text())
-    expected_name = config.cell.name
-    matches = [entry for entry in ledger["cells"] if entry["cell"] == expected_name]
-    if len(matches) != 1:
-        raise ValueError(f"expected one generation ledger entry for {expected_name}, found {len(matches)}")
-    entry = matches[0]
+def materialize_dataset(config: MaterializeDatasetConfig) -> FinanceDataset:
+    """Select verified tasks and render canonical conversations to Parquet."""
+    ledger = json.loads((StoragePath(config.generation_root) / GENERATION_FILENAME).read_text())
     task_data_path = prefix_join(config.generation_root, ledger["task_data"])
     with StoragePath(task_data_path).open("rb") as handle:
-        task_records = pq.ParquetFile(handle).read().to_pylist()
-    payloads = [task_payload(record) for record in task_records if record["cell"] == expected_name]
-    if len(payloads) != entry["requested"]:
-        raise ValueError(
-            f"generation manifest records {entry['requested']} tasks for {expected_name}, "
-            f"but task Parquet contains {len(payloads)}"
-        )
-    rows = generated_payloads_to_rows(config.cell, payloads)
+        records = pq.ParquetFile(handle).read().to_pylist()
+    if len(records) != ledger["requested"]:
+        raise ValueError(f"generation manifest records {ledger['requested']} tasks; Parquet contains {len(records)}")
+    rows = generated_payloads_to_rows([task_payload(record) for record in records], config.accepted_examples)
 
     output = StoragePath(config.output_path)
     output.mkdirs()
     chat_path = output / RAW_CHAT_FILENAME
-    chat_documents = [openai_chat_document(row["messages"], DATA_SOURCE, source_id=row["id"]) for row in rows]
+    chat_documents = [openai_chat_document(row["messages"], "curriculum-sft", source_id=row["id"]) for row in rows]
     write_parquet_file(chat_documents, str(chat_path), schema=CHAT_SCHEMA)
 
     normalized_chat = normalize_chat_to_parquet(
@@ -110,33 +93,18 @@ def materialize_dataset(config: MaterializeDatasetConfig) -> AblationDataset:
         max_workers=1,
         bare=True,
     )
-    manifest = {
-        "cell": config.cell.name,
-        "generation_cell": expected_name,
-        "generation_root": config.generation_root,
-        "accepted_examples": len(rows),
-        "generation_quality": {
-            key: entry[key]
-            for key in (
-                "requested",
-                "accepted",
-                "unique_accepted",
-                "format_rate",
-                "arithmetic_rate",
-                "evidence_rate",
-                "replicates",
-            )
-        },
-        "generation_batch_id": ledger["batch_id"],
-        "training_data": f"{NORMALIZED_MAIN_RELATIVE_PATH}/*.parquet",
-    }
-    (output / MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    return AblationDataset(path=config.output_path, main_output_dir=normalized.main_output_dir)
+    (output / "manifest.json").write_text(
+        json.dumps(
+            {"generation_root": config.generation_root, "accepted_examples": len(rows)},
+            indent=2,
+        )
+        + "\n"
+    )
+    return FinanceDataset(path=config.output_path, main_output_dir=normalized.main_output_dir)
 
 
-def build_store(config: BuildStoreConfig) -> AblationStore:
-    """Tokenize normalized Parquet and build the Levanter store used for training."""
-
+def build_store(config: BuildStoreConfig) -> FinanceStore:
+    """Tokenize rendered Parquet and build the packed Levanter store."""
     normalized = NormalizedData(
         main_output_dir=config.normalized_path,
         dup_output_dir=prefix_join(config.output_path, "unused-dups"),
@@ -162,30 +130,23 @@ def build_store(config: BuildStoreConfig) -> AblationStore:
     train = store.splits.get("train")
     if train is None or train.total_tokens <= 0:
         raise ValueError("curriculum SFT Datakit store produced no training tokens")
-    return AblationStore(path=config.output_path, cache_path=store.cache_path, total_tokens=train.total_tokens)
+    return FinanceStore(path=config.output_path, cache_path=store.cache_path, total_tokens=train.total_tokens)
 
 
 def dataset_step(
-    generation: ArtifactStep[Artifact],
-    cell: AblationCell,
-    *,
-    version: str,
-) -> ArtifactStep[AblationDataset]:
-    """Materialize one oracle-verified training arm from the shared GLM ledger."""
-
-    condition = f"{cell.curriculum}__{cell.generation_spec}"
-
+    generation: ArtifactStep[Artifact], *, version: str, accepted_examples: int
+) -> ArtifactStep[FinanceDataset]:
     def build_config(ctx: StepContext) -> MaterializeDatasetConfig:
         return MaterializeDatasetConfig(
             generation_root=ctx.artifact_path(generation),
             output_path=ctx.output_path,
-            cell=cell,
+            accepted_examples=accepted_examples,
         )
 
     return ArtifactStep(
-        name=user_owned_name(f"documents/curriculum-sft/ablation/{condition}"),
+        name=user_owned_name("documents/curriculum-sft/finance-chat"),
         version=version,
-        artifact_type=AblationDataset,
+        artifact_type=FinanceDataset,
         run=materialize_dataset,
         build_config=build_config,
         deps=(generation,),
@@ -193,16 +154,11 @@ def dataset_step(
 
 
 def store_step(
-    dataset: ArtifactStep[AblationDataset],
+    dataset: ArtifactStep[FinanceDataset],
     tokenizer: ArtifactStep[Artifact],
-    cell: AblationCell,
     *,
     version: str,
-) -> ArtifactStep[AblationStore]:
-    """Build a Datakit token store for one materialized ablation cell."""
-
-    condition = f"{cell.curriculum}__{cell.generation_spec}"
-
+) -> ArtifactStep[FinanceStore]:
     def build_config(ctx: StepContext) -> BuildStoreConfig:
         return BuildStoreConfig(
             normalized_path=prefix_join(ctx.artifact_path(dataset), NORMALIZED_MAIN_RELATIVE_PATH),
@@ -211,9 +167,9 @@ def store_step(
         )
 
     return ArtifactStep(
-        name=user_owned_name(f"tokenized/curriculum-sft/ablation/{condition}"),
+        name=user_owned_name("tokenized/curriculum-sft/finance"),
         version=version,
-        artifact_type=AblationStore,
+        artifact_type=FinanceStore,
         run=build_store,
         build_config=build_config,
         deps=(dataset, tokenizer),

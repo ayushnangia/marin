@@ -2,17 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from marin.evaluation.model_config import ModelConfig
-from marin.execution.artifact import Artifact
 from marin.execution.lazy import ArtifactStep, StepContext
+from marin.training.training import LevanterCheckpoint
 
-from experiments.evaluation.pipeline import ProducedEvaluationModel
+from experiments.evaluation.pipeline import eval_checkpoint_step
 
 
-def test_produced_evaluation_model_drops_source_revision():
+def test_eval_checkpoint_step_depends_on_export_and_drops_source_revision(tmp_path):
     checkpoint = ArtifactStep(
         name="checkpoints/generated-model",
         version="2026.09.22",
-        artifact_type=Artifact,
+        artifact_type=LevanterCheckpoint,
         run=lambda _config: None,
         build_config=lambda _ctx: {},
     )
@@ -22,8 +22,12 @@ def test_produced_evaluation_model_drops_source_revision():
         revision="base-model-revision",
         tokenizer="organization/tokenizer",
     )
+    config_path = tmp_path / "financebench.yaml"
+    config_path.write_text("tasks: []\n")
+    step = eval_checkpoint_step(checkpoint, source, evalchemy_config_path=config_path, version="2026.09.22")
 
-    resolved = ProducedEvaluationModel(checkpoint, source).resolve(StepContext.for_fingerprint(deps=(checkpoint,)))
+    config = step.build_config(StepContext.for_fingerprint(runtime_arg_keys=step.runtime_args, deps=step.deps))
 
-    assert resolved.location == "artifact://checkpoints/generated-model@2026.09.22"
-    assert resolved.revision is None
+    assert step.deps == (checkpoint,)
+    assert config.model.location == "artifact://checkpoints/generated-model@2026.09.22"
+    assert config.model.revision is None

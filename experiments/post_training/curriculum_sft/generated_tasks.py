@@ -1,24 +1,20 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Parquet contract for generated curriculum tasks and their oracle results."""
+"""Parquet contract for generated finance tasks and oracle results."""
 
 from typing import Any
 
 import pyarrow as pa
 
-from experiments.post_training.curriculum_sft.ablation.matrix import AblationCell
-from experiments.post_training.curriculum_sft.ablation.verifier import verify_task_payload
+from experiments.post_training.curriculum_sft.verification import verify_task_payload
 
 GENERATION_FILENAME = "generation.json"
 GENERATED_TASKS_FILENAME = "tasks/part-00000-of-00001.parquet"
 RAW_RESPONSES_FILENAME = "raw-responses.jsonl"
 GENERATED_TASK_SCHEMA = pa.schema(
     [
-        pa.field("cell", pa.string(), nullable=False),
-        pa.field("curriculum", pa.string(), nullable=False),
-        pa.field("generation_spec", pa.string(), nullable=False),
-        pa.field("replicate", pa.int64(), nullable=False),
+        pa.field("batch_index", pa.int64(), nullable=False),
         pa.field("seed", pa.int64(), nullable=False),
         pa.field("task_id", pa.string(), nullable=True),
         pa.field("issuer", pa.string(), nullable=False),
@@ -37,9 +33,8 @@ GENERATED_TASK_SCHEMA = pa.schema(
 
 
 def generated_task_record(
-    cell: AblationCell,
     *,
-    replicate: int,
+    batch_index: int,
     seed: int,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -47,10 +42,7 @@ def generated_task_record(
 
     verification = verify_task_payload(payload)
     return {
-        "cell": cell.name,
-        "curriculum": cell.curriculum.value,
-        "generation_spec": cell.generation_spec.value,
-        "replicate": replicate,
+        "batch_index": batch_index,
         "seed": seed,
         "task_id": payload.get("task_id"),
         "issuer": payload["issuer"],
