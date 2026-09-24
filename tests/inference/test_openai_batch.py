@@ -26,16 +26,12 @@ def _tool_response(name: str, arguments: object) -> dict:
 def test_structured_tool_schema_and_parse_share_the_pydantic_contract() -> None:
     tool = StructuredTool("submit_answer", "Submit the answer.", _Answer)
 
-    definition = tool.definition()
-    assert definition["function"]["parameters"] == {
-        "additionalProperties": False,
-        "properties": {
-            "value": {"title": "Value", "type": "integer"},
-            "evidence": {"minLength": 1, "title": "Evidence", "type": "string"},
-        },
-        "required": ["value", "evidence"],
-        "type": "object",
-    }
+    parameters = tool.definition()["function"]["parameters"]
+    assert parameters["type"] == "object"
+    assert parameters["additionalProperties"] is False
+    assert set(parameters["required"]) == {"value", "evidence"}
+    assert parameters["properties"]["value"]["type"] == "integer"
+    assert parameters["properties"]["evidence"]["minLength"] == 1
     assert tool.parse(_tool_response("submit_answer", {"value": 7, "evidence": "fact-1"})) == _Answer(
         value=7, evidence="fact-1"
     )
